@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Production Builds
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# Media Downloads (keep folder structure, ignore media files)
+server/downloads/*
+!server/downloads/.gitkeep
+
+# Python & Environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.env
+.env.*
+!.env.example
+
+# IDE & Editor files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# Schema generation temporary artifacts
+tools/ytdlp_help.txt
+tools/ytdlp_schema.json
