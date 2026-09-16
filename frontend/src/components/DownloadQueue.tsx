@@ -217,25 +217,28 @@ export const DownloadQueue: React.FC<DownloadQueueProps> = ({
             { id: 'queued', label: 'In Queue', count: counts.queued + counts.paused },
             { id: 'completed', label: 'Completed', count: counts.completed },
             { id: 'failed', label: 'Failed / Cancelled', count: counts.failed }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveFilter(tab.id as FilterTab)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 ${
-                activeFilter === tab.id
-                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-                  : 'bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800'
-              }`}
-            >
-              <span>{tab.label}</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                activeFilter === tab.id ? 'bg-indigo-800 text-indigo-100' : 'bg-slate-800 text-slate-400'
-              }`}>
-                {tab.count}
-              </span>
-            </button>
-          ))}
+          ].map(tab => {
+            const isActive = activeFilter === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveFilter(tab.id as FilterTab)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap cursor-pointer flex items-center gap-1.5 outline-none select-none border transition-colors duration-150 ${
+                  isActive
+                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
+                    : 'bg-slate-900/60 hover:bg-slate-800 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>{tab.label}</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono transition-colors duration-150 ${
+                  isActive ? 'bg-indigo-700 text-indigo-100' : 'bg-slate-800 text-slate-400'
+                }`}>
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Search */}
@@ -252,54 +255,55 @@ export const DownloadQueue: React.FC<DownloadQueueProps> = ({
       </div>
 
       {/* Queue Items List */}
-      {filteredJobs.length === 0 ? (
-        <div className="rounded-2xl border border-slate-800/80 bg-slate-900/40 p-12 text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-slate-800/60 flex items-center justify-center mx-auto text-slate-500">
-            <Download className="w-6 h-6" />
+      <div className="min-h-[220px]">
+        {filteredJobs.length === 0 ? (
+          <div className="rounded-2xl border border-slate-800/80 bg-slate-900/40 p-12 text-center space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-slate-800/60 flex items-center justify-center mx-auto text-slate-500">
+              <Download className="w-6 h-6" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-slate-300">
+                {jobs.length === 0 ? 'Download Queue is Empty' : 'No matching downloads in this tab'}
+              </h4>
+              <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                {jobs.length === 0
+                  ? 'Select presets or inspect media and click "Add to Queue" to begin.'
+                  : 'Try switching filters or clearing your search term.'}
+              </p>
+            </div>
           </div>
-          <div>
-            <h4 className="text-sm font-semibold text-slate-300">
-              {jobs.length === 0 ? 'Download Queue is Empty' : 'No matching downloads in this tab'}
-            </h4>
-            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              {jobs.length === 0
-                ? 'Select presets or inspect media and click "Add to Queue" to begin.'
-                : 'Try switching filters or clearing your search term.'}
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filteredJobs.map((job) => {
-            const isLogsOpen = expandedLogs[job.id];
-            const isDownloading = job.status === 'downloading';
-            const isQueued = job.status === 'queued';
-            const isPaused = job.status === 'paused';
-            const isCompleted = job.status === 'completed';
-            const isFailed = job.status === 'failed';
-            const isCancelled = job.status === 'cancelled';
+        ) : (
+          <div className="space-y-3">
+            {filteredJobs.map((job) => {
+              const isLogsOpen = expandedLogs[job.id];
+              const isDownloading = job.status === 'downloading';
+              const isQueued = job.status === 'queued';
+              const isPaused = job.status === 'paused';
+              const isCompleted = job.status === 'completed';
+              const isFailed = job.status === 'failed';
+              const isCancelled = job.status === 'cancelled';
 
-            // Find index among queued jobs for ordering arrows
-            const queuedList = jobs.filter(j => j.status === 'queued' || j.status === 'paused');
-            const queuedIndex = queuedList.findIndex(j => j.id === job.id);
-            const canMoveUp = (isQueued || isPaused) && queuedIndex > 0;
-            const canMoveDown = (isQueued || isPaused) && queuedIndex >= 0 && queuedIndex < queuedList.length - 1;
+              // Find index among queued jobs for ordering arrows
+              const queuedList = jobs.filter(j => j.status === 'queued' || j.status === 'paused');
+              const queuedIndex = queuedList.findIndex(j => j.id === job.id);
+              const canMoveUp = (isQueued || isPaused) && queuedIndex > 0;
+              const canMoveDown = (isQueued || isPaused) && queuedIndex >= 0 && queuedIndex < queuedList.length - 1;
 
-            return (
-              <div
-                key={job.id}
-                className={`rounded-2xl border transition-all overflow-hidden ${
-                  isDownloading
-                    ? 'bg-slate-900/90 border-indigo-500/50 shadow-xl shadow-indigo-500/5 ring-1 ring-indigo-500/30'
-                    : isCompleted
-                    ? 'bg-slate-900/60 border-emerald-500/30'
-                    : isFailed
-                    ? 'bg-slate-900/60 border-red-500/30'
-                    : isPaused
-                    ? 'bg-slate-900/60 border-amber-500/30'
-                    : 'bg-slate-900/60 border-slate-800'
-                }`}
-              >
+              return (
+                <div
+                  key={job.id}
+                  className={`rounded-2xl border transition-colors duration-150 overflow-hidden ${
+                    isDownloading
+                      ? 'bg-slate-900/90 border-indigo-500/50 shadow-xl shadow-indigo-500/5 ring-1 ring-indigo-500/30'
+                      : isCompleted
+                      ? 'bg-slate-900/60 border-emerald-500/30'
+                      : isFailed
+                      ? 'bg-slate-900/60 border-red-500/30'
+                      : isPaused
+                      ? 'bg-slate-900/60 border-amber-500/30'
+                      : 'bg-slate-900/60 border-slate-800'
+                  }`}
+                >
                 <div className="p-4 space-y-3">
                   {/* Top line: Status Icon, Title, URL, Action buttons */}
                   <div className="flex items-start justify-between gap-3">
@@ -534,6 +538,7 @@ export const DownloadQueue: React.FC<DownloadQueueProps> = ({
           })}
         </div>
       )}
+      </div>
     </div>
   );
 };

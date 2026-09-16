@@ -4,6 +4,7 @@ const http = require('http');
 const { spawn, exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const WebSocket = require('ws');
 
 const app = express();
@@ -11,7 +12,8 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 4000;
-const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+// Default download destination: (%username%)\Videos\AetherDL
+const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(os.homedir(), 'Videos', 'AetherDL');
 
 if (!fs.existsSync(DOWNLOADS_DIR)) {
   fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });

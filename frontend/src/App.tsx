@@ -606,7 +606,7 @@ export function App() {
           {activeTab === 'files' && (
             <FileBrowser
               files={files}
-              downloadsDir={systemStatus?.downloadsDir || 'server/downloads'}
+              downloadsDir={systemStatus?.downloadsDir || 'Videos/AetherDL'}
               onOpenFolder={handleOpenFolder}
               onDeleteFile={handleDeleteFile}
               onRefresh={fetchFiles}
