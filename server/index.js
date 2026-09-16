@@ -425,14 +425,14 @@ app.post('/api/download', (req, res) => {
 });
 
 // Pause all queue processing
-app.post('/api/queue/pause', (req, res) => {
+app.post(['/api/queue/pause', '/api/queue/pause-all'], (req, res) => {
   isQueuePaused = true;
   broadcast({ type: 'queue_state', isPaused: true });
   res.json({ success: true, isPaused: true });
 });
 
 // Resume queue processing
-app.post('/api/queue/resume', (req, res) => {
+app.post(['/api/queue/resume', '/api/queue/resume-all'], (req, res) => {
   isQueuePaused = false;
   broadcast({ type: 'queue_state', isPaused: false });
   processQueue();
@@ -486,9 +486,9 @@ app.post('/api/queue/clear-all', (req, res) => {
 
 // Reorder queued items
 app.post('/api/queue/reorder', (req, res) => {
-  const { newOrder } = req.body;
+  const newOrder = req.body.queueIds || req.body.newOrder;
   if (!Array.isArray(newOrder)) {
-    return res.status(400).json({ error: 'newOrder must be an array of job IDs' });
+    return res.status(400).json({ error: 'newOrder or queueIds must be an array of job IDs' });
   }
   // Filter only IDs that are currently queued
   const validQueuedIds = new Set(queue);
@@ -508,7 +508,7 @@ app.post('/api/queue/reorder', (req, res) => {
 });
 
 // Retry a failed/cancelled job
-app.post('/api/retry/:jobId', (req, res) => {
+app.post(['/api/retry/:jobId', '/api/queue/retry/:jobId'], (req, res) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);
   if (!job) {
@@ -536,7 +536,7 @@ app.post('/api/retry/:jobId', (req, res) => {
 });
 
 // Pause a specific job
-app.post('/api/pause/:jobId', (req, res) => {
+app.post(['/api/pause/:jobId', '/api/queue/pause/:jobId'], (req, res) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);
   if (!job) {
@@ -552,11 +552,13 @@ app.post('/api/pause/:jobId', (req, res) => {
   job.status = 'paused';
 
   if (job.process) {
+    const pid = job.process.pid;
+    job.process = null; // Detach before killing to avoid triggering failure handler
     try {
       if (process.platform === 'win32') {
-        exec(`taskkill /pid ${job.process.pid} /T /F`);
+        exec(`taskkill /pid ${pid} /T /F`);
       } else {
-        job.process.kill('SIGTERM');
+        process.kill(pid, 'SIGTERM');
       }
     } catch (e) {
       console.error('Error stopping process for pause:', e);
@@ -569,7 +571,7 @@ app.post('/api/pause/:jobId', (req, res) => {
 });
 
 // Resume a specific paused job
-app.post('/api/resume/:jobId', (req, res) => {
+app.post(['/api/resume/:jobId', '/api/queue/resume/:jobId'], (req, res) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);
   if (!job) {
@@ -577,6 +579,8 @@ app.post('/api/resume/:jobId', (req, res) => {
   }
 
   job.status = 'queued';
+  job.error = null;
+  job.logs.push({ time: new Date().toLocaleTimeString(), text: 'Resuming download...', type: 'stdout' });
   if (!queue.includes(jobId)) {
     queue.push(jobId);
   }
@@ -587,7 +591,10 @@ app.post('/api/resume/:jobId', (req, res) => {
 });
 
 // Remove a job from queue or delete entirely
-app.delete('/api/jobs/:jobId', (req, res) => {
+app.all(['/api/jobs/:jobId', '/api/queue/remove/:jobId'], (req, res) => {
+  if (req.method !== 'DELETE' && req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
   const { jobId } = req.params;
   const job = jobs.get(jobId);
   if (!job) {
@@ -596,12 +603,14 @@ app.delete('/api/jobs/:jobId', (req, res) => {
 
   // If running, kill process
   if (job.process) {
+    const pid = job.process.pid;
     job.status = 'cancelled';
+    job.process = null;
     try {
       if (process.platform === 'win32') {
-        exec(`taskkill /pid ${job.process.pid} /T /F`);
+        exec(`taskkill /pid ${pid} /T /F`);
       } else {
-        job.process.kill('SIGKILL');
+        process.kill(pid, 'SIGKILL');
       }
     } catch (e) {
       console.error('Error killing process on remove:', e);
@@ -621,7 +630,7 @@ app.delete('/api/jobs/:jobId', (req, res) => {
 });
 
 // Cancel a download job
-app.post('/api/cancel/:jobId', (req, res) => {
+app.post(['/api/cancel/:jobId', '/api/queue/cancel/:jobId'], (req, res) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);
   if (!job) {
@@ -636,10 +645,16 @@ app.post('/api/cancel/:jobId', (req, res) => {
 
   job.status = 'cancelled';
   if (job.process) {
-    if (process.platform === 'win32') {
-      exec(`taskkill /pid ${job.process.pid} /T /F`);
-    } else {
-      job.process.kill('SIGKILL');
+    const pid = job.process.pid;
+    job.process = null;
+    try {
+      if (process.platform === 'win32') {
+        exec(`taskkill /pid ${pid} /T /F`);
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
+    } catch (e) {
+      console.error('Error killing process on cancel:', e);
     }
   }
 
