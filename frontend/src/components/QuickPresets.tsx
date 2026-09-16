@@ -157,10 +157,10 @@ export const QuickPresets: React.FC<QuickPresetsProps> = ({
                 <button
                   type="button"
                   onClick={() => onQuickDownload(preset.title, preset.options)}
-                  className="py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition-all cursor-pointer"
+                  className="py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition-all cursor-pointer whitespace-nowrap"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  Download
+                  Add to Queue
                 </button>
               </div>
             </div>

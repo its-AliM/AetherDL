@@ -28,8 +28,14 @@ if (fs.existsSync(FRONTEND_DIST)) {
 }
 
 // Track active jobs and download history
+// Jobs map: jobId => job object
+// Queue array: list of jobIds waiting to be processed
 const jobs = new Map();
+const queue = [];
 const history = [];
+
+let maxConcurrent = 2;
+let isQueuePaused = false;
 
 // Helper: Broadcast to all connected WebSocket clients
 function broadcast(data) {
@@ -41,13 +47,145 @@ function broadcast(data) {
   });
 }
 
+function getQueueSnapshot() {
+  return {
+    jobs: Array.from(jobs.values()).map(sanitizeJob),
+    queueOrder: [...queue],
+    history: history.slice(-50),
+    maxConcurrent,
+    isPaused: isQueuePaused
+  };
+}
+
+// Helper: Count actively downloading jobs
+function getActiveDownloadingCount() {
+  let count = 0;
+  for (const job of jobs.values()) {
+    if (job.status === 'downloading') {
+      count++;
+    }
+  }
+  return count;
+}
+
+// Queue runner: process next queued items up to maxConcurrent
+function processQueue() {
+  if (isQueuePaused) return;
+
+  while (getActiveDownloadingCount() < maxConcurrent && queue.length > 0) {
+    const nextJobId = queue.shift();
+    const job = jobs.get(nextJobId);
+    if (!job) continue;
+
+    if (job.status === 'queued') {
+      startJobProcess(job);
+    }
+  }
+}
+
+function startJobProcess(job) {
+  const args = buildYtdlpArgs(job.url, job.options || {}, job.customArgs || '');
+  const child = spawn('python', args);
+
+  job.process = child;
+  job.status = 'downloading';
+  job.startTime = job.startTime || Date.now();
+  job.command = `yt-dlp ${args.slice(2).map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}`;
+
+  broadcast({ type: 'job_updated', job: sanitizeJob(job) });
+
+  let lineBuffer = '';
+
+  child.stdout.on('data', chunk => {
+    lineBuffer += chunk.toString();
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop(); // keep remainder
+
+    lines.forEach(line => {
+      const cleanLine = line.trim();
+      if (!cleanLine) return;
+
+      job.logs.push({ time: new Date().toLocaleTimeString(), text: cleanLine, type: 'stdout' });
+      if (job.logs.length > 500) job.logs.shift(); // bound log size
+
+      // Parse custom progress template: download:[10.5%]|00:30|5.2MiB/s|45.0MiB|path/to/file.mp4
+      if (cleanLine.startsWith('download:[')) {
+        const parts = cleanLine.substring(9).split('|');
+        if (parts.length >= 4) {
+          const percentStr = parts[0].replace('%]', '').trim();
+          const percent = parseFloat(percentStr) || 0;
+          job.progress = Math.min(100, Math.max(0, percent));
+          job.eta = parts[1] || '--:--';
+          job.speed = parts[2] || '--/s';
+          job.size = parts[3] || '--';
+          if (parts[4]) {
+            job.filename = path.basename(parts[4]);
+          }
+        }
+      } else if (cleanLine.includes('[download]') && cleanLine.includes('%')) {
+        // Standard yt-dlp fallback parse
+        const m = cleanLine.match(/(\d+\.?\d*)%\s+of\s+(?:~\s*)?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/);
+        if (m) {
+          job.progress = parseFloat(m[1]) || job.progress;
+          job.size = m[2];
+          job.speed = m[3];
+          job.eta = m[4];
+        }
+      } else if (cleanLine.includes('[Merger]') || cleanLine.includes('[ExtractAudio]') || cleanLine.includes('[Fixup')) {
+        job.speed = 'Processing...';
+      } else if (cleanLine.startsWith('[download] Destination:')) {
+        job.filename = path.basename(cleanLine.replace('[download] Destination:', '').trim());
+      }
+
+      broadcast({ type: 'job_progress', jobId: job.id, job: sanitizeJob(job) });
+    });
+  });
+
+  child.stderr.on('data', chunk => {
+    const text = chunk.toString().trim();
+    if (text) {
+      job.logs.push({ time: new Date().toLocaleTimeString(), text, type: 'stderr' });
+      if (job.logs.length > 500) job.logs.shift();
+      broadcast({ type: 'job_log', jobId: job.id, log: { time: new Date().toLocaleTimeString(), text, type: 'stderr' } });
+    }
+  });
+
+  child.on('close', code => {
+    job.endTime = Date.now();
+    job.process = null;
+
+    if (code === 0) {
+      job.status = 'completed';
+      job.progress = 100;
+    } else {
+      job.status = job.status === 'cancelled' ? 'cancelled' : (job.status === 'paused' ? 'paused' : 'failed');
+      if (job.status === 'failed') {
+        job.error = job.error || `Process exited with code ${code}`;
+      }
+    }
+
+    // Save to history if completed or failed
+    if (job.status === 'completed' || job.status === 'failed') {
+      history.push(sanitizeJob(job));
+    }
+
+    broadcast({ type: 'job_completed', job: sanitizeJob(job) });
+
+    // Process next item in queue
+    processQueue();
+  });
+}
+
 // WebSocket connection handling
 wss.on('connection', (ws) => {
   // Send active jobs snapshot and history on connect
   ws.send(JSON.stringify({
     type: 'init',
-    jobs: Array.from(jobs.values()),
-    history: history.slice(-50)
+    jobs: Array.from(jobs.values()).map(sanitizeJob),
+    queueOrder: [...queue],
+    history: history.slice(-50),
+    maxConcurrent,
+    isPaused: isQueuePaused
   }));
 });
 
@@ -61,21 +199,24 @@ app.get(['/api/system', '/api/status'], (req, res) => {
 
     exec('ffmpeg -version', (err2, stdout2) => {
       if (!err2 && stdout2) {
-        const m = stdout2.match(/ffmpeg version ([^\s]+)/);
-        ffmpegVersion = m ? m[1] : 'Installed';
+        const match = stdout2.match(/ffmpeg version ([^\s]+)/);
+        ffmpegVersion = match ? match[1] : 'installed';
       }
 
       res.json({
         ytdlp: {
           installed: !!ytdlpVersion,
-          version: ytdlpVersion || 'Not detected'
+          version: ytdlpVersion
         },
         ffmpeg: {
           installed: !!ffmpegVersion,
-          version: ffmpegVersion || 'Not detected'
+          version: ffmpegVersion
         },
         downloadsDir: DOWNLOADS_DIR,
-        activeJobsCount: Array.from(jobs.values()).filter(j => j.status === 'downloading').length
+        activeJobsCount: getActiveDownloadingCount(),
+        queuedCount: queue.length,
+        isQueuePaused,
+        maxConcurrent
       });
     });
   });
@@ -220,7 +361,12 @@ app.post('/api/build-command', (req, res) => {
   res.json({ command: cmd, args: args.slice(2) });
 });
 
-// Start a download job
+// Get current jobs and queue state
+app.get('/api/jobs', (req, res) => {
+  res.json(getQueueSnapshot());
+});
+
+// Add a download job to queue (or start immediately if under concurrency limit)
 app.post('/api/download', (req, res) => {
   const { url, options = {}, customArgs = '', title = 'Downloading media...' } = req.body;
   if (!url) {
@@ -242,7 +388,9 @@ app.post('/api/download', (req, res) => {
     size: '--',
     filename: '',
     downloadPath,
-    startTime: Date.now(),
+    options,
+    customArgs,
+    startTime: null,
     endTime: null,
     error: null,
     logs: [],
@@ -250,88 +398,210 @@ app.post('/api/download', (req, res) => {
   };
 
   jobs.set(jobId, job);
-  broadcast({ type: 'job_added', job });
+  queue.push(jobId);
 
-  // Spawn yt-dlp process
-  const child = spawn('python', args);
-  job.process = child;
-  job.status = 'downloading';
-  broadcast({ type: 'job_updated', job: sanitizeJob(job) });
+  broadcast({ type: 'job_added', job: sanitizeJob(job), queueOrder: [...queue] });
 
-  let lineBuffer = '';
+  // Trigger queue runner
+  processQueue();
 
-  child.stdout.on('data', chunk => {
-    lineBuffer += chunk.toString();
-    const lines = lineBuffer.split('\n');
-    lineBuffer = lines.pop(); // keep remainder
+  res.json({ success: true, jobId, job: sanitizeJob(job), queueOrder: [...queue] });
+});
 
-    lines.forEach(line => {
-      const cleanLine = line.trim();
-      if (!cleanLine) return;
+// Pause all queue processing
+app.post('/api/queue/pause', (req, res) => {
+  isQueuePaused = true;
+  broadcast({ type: 'queue_state', isPaused: true });
+  res.json({ success: true, isPaused: true });
+});
 
-      job.logs.push({ time: new Date().toLocaleTimeString(), text: cleanLine, type: 'stdout' });
-      if (job.logs.length > 500) job.logs.shift(); // bound log size
+// Resume queue processing
+app.post('/api/queue/resume', (req, res) => {
+  isQueuePaused = false;
+  broadcast({ type: 'queue_state', isPaused: false });
+  processQueue();
+  res.json({ success: true, isPaused: false });
+});
 
-      // Parse custom progress template: download:[10.5%]|00:30|5.2MiB/s|45.0MiB|path/to/file.mp4
-      if (cleanLine.startsWith('download:[')) {
-        const parts = cleanLine.substring(9).split('|');
-        if (parts.length >= 4) {
-          const percentStr = parts[0].replace('%]', '').trim();
-          const percent = parseFloat(percentStr) || 0;
-          job.progress = Math.min(100, Math.max(0, percent));
-          job.eta = parts[1] || '--:--';
-          job.speed = parts[2] || '--/s';
-          job.size = parts[3] || '--';
-          if (parts[4]) {
-            job.filename = path.basename(parts[4]);
-          }
-        }
-      } else if (cleanLine.includes('[download]') && cleanLine.includes('%')) {
-        // Standard yt-dlp fallback parse
-        const m = cleanLine.match(/(\d+\.?\d*)%\s+of\s+(?:~\s*)?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/);
-        if (m) {
-          job.progress = parseFloat(m[1]) || job.progress;
-          job.size = m[2];
-          job.speed = m[3];
-          job.eta = m[4];
-        }
-      } else if (cleanLine.includes('[Merger]') || cleanLine.includes('[ExtractAudio]') || cleanLine.includes('[Fixup')) {
-        job.speed = 'Processing...';
-      } else if (cleanLine.startsWith('[download] Destination:')) {
-        job.filename = path.basename(cleanLine.replace('[download] Destination:', '').trim());
+// Update queue concurrency settings
+app.post('/api/queue/config', (req, res) => {
+  const { maxConcurrent: newMax } = req.body;
+  if (typeof newMax === 'number' && newMax >= 1 && newMax <= 10) {
+    maxConcurrent = newMax;
+    broadcast({ type: 'queue_config', maxConcurrent });
+    processQueue();
+    return res.json({ success: true, maxConcurrent });
+  }
+  res.status(400).json({ error: 'Invalid maxConcurrent value (must be 1-10)' });
+});
+
+// Clear completed, cancelled, and failed jobs from queue list
+app.post('/api/queue/clear-finished', (req, res) => {
+  const finishedIds = [];
+  for (const [id, job] of jobs.entries()) {
+    if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed') {
+      finishedIds.push(id);
+      jobs.delete(id);
+    }
+  }
+  broadcast({ type: 'jobs_cleared', clearedIds: finishedIds, ...getQueueSnapshot() });
+  res.json({ success: true, clearedCount: finishedIds.length });
+});
+
+// Clear everything that is not actively downloading
+app.post('/api/queue/clear-all', (req, res) => {
+  const removedIds = [];
+  // Remove queued items
+  while (queue.length > 0) {
+    const id = queue.shift();
+    jobs.delete(id);
+    removedIds.push(id);
+  }
+  // Remove non-active jobs
+  for (const [id, job] of jobs.entries()) {
+    if (job.status !== 'downloading') {
+      removedIds.push(id);
+      jobs.delete(id);
+    }
+  }
+  broadcast({ type: 'queue_reset', ...getQueueSnapshot() });
+  res.json({ success: true, removedCount: removedIds.length });
+});
+
+// Reorder queued items
+app.post('/api/queue/reorder', (req, res) => {
+  const { newOrder } = req.body;
+  if (!Array.isArray(newOrder)) {
+    return res.status(400).json({ error: 'newOrder must be an array of job IDs' });
+  }
+  // Filter only IDs that are currently queued
+  const validQueuedIds = new Set(queue);
+  const reordered = newOrder.filter(id => validQueuedIds.has(id));
+  // Append any missed queued IDs at the end
+  queue.forEach(id => {
+    if (!reordered.includes(id)) {
+      reordered.push(id);
+    }
+  });
+
+  queue.length = 0;
+  queue.push(...reordered);
+
+  broadcast({ type: 'queue_reordered', queueOrder: [...queue] });
+  res.json({ success: true, queueOrder: [...queue] });
+});
+
+// Retry a failed/cancelled job
+app.post('/api/retry/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  // Reset job state
+  job.status = 'queued';
+  job.progress = 0;
+  job.eta = '--:--';
+  job.speed = '--/s';
+  job.size = '--';
+  job.error = null;
+  job.startTime = null;
+  job.endTime = null;
+  job.logs.push({ time: new Date().toLocaleTimeString(), text: 'Download re-queued for retry.', type: 'stdout' });
+
+  if (!queue.includes(jobId)) {
+    queue.push(jobId);
+  }
+
+  broadcast({ type: 'job_updated', job: sanitizeJob(job), queueOrder: [...queue] });
+  processQueue();
+  res.json({ success: true, job: sanitizeJob(job) });
+});
+
+// Pause a specific job
+app.post('/api/pause/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  // If in queue, remove from queue
+  const qIdx = queue.indexOf(jobId);
+  if (qIdx !== -1) {
+    queue.splice(qIdx, 1);
+  }
+
+  job.status = 'paused';
+
+  if (job.process) {
+    try {
+      if (process.platform === 'win32') {
+        exec(`taskkill /pid ${job.process.pid} /T /F`);
+      } else {
+        job.process.kill('SIGTERM');
       }
-
-      broadcast({ type: 'job_progress', jobId, job: sanitizeJob(job) });
-    });
-  });
-
-  child.stderr.on('data', chunk => {
-    const text = chunk.toString().trim();
-    if (text) {
-      job.logs.push({ time: new Date().toLocaleTimeString(), text, type: 'stderr' });
-      if (job.logs.length > 500) job.logs.shift();
-      broadcast({ type: 'job_log', jobId, log: { time: new Date().toLocaleTimeString(), text, type: 'stderr' } });
+    } catch (e) {
+      console.error('Error stopping process for pause:', e);
     }
-  });
+  }
 
-  child.on('close', code => {
-    job.endTime = Date.now();
-    job.process = null;
+  broadcast({ type: 'job_updated', job: sanitizeJob(job), queueOrder: [...queue] });
+  processQueue();
+  res.json({ success: true, job: sanitizeJob(job) });
+});
 
-    if (code === 0) {
-      job.status = 'completed';
-      job.progress = 100;
-    } else {
-      job.status = job.status === 'cancelled' ? 'cancelled' : 'failed';
-      job.error = job.error || `Process exited with code ${code}`;
+// Resume a specific paused job
+app.post('/api/resume/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  job.status = 'queued';
+  if (!queue.includes(jobId)) {
+    queue.push(jobId);
+  }
+
+  broadcast({ type: 'job_updated', job: sanitizeJob(job), queueOrder: [...queue] });
+  processQueue();
+  res.json({ success: true, job: sanitizeJob(job) });
+});
+
+// Remove a job from queue or delete entirely
+app.delete('/api/jobs/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  // If running, kill process
+  if (job.process) {
+    job.status = 'cancelled';
+    try {
+      if (process.platform === 'win32') {
+        exec(`taskkill /pid ${job.process.pid} /T /F`);
+      } else {
+        job.process.kill('SIGKILL');
+      }
+    } catch (e) {
+      console.error('Error killing process on remove:', e);
     }
+  }
 
-    // Save to history
-    history.push(sanitizeJob(job));
-    broadcast({ type: 'job_completed', job: sanitizeJob(job) });
-  });
+  // Remove from queue
+  const qIdx = queue.indexOf(jobId);
+  if (qIdx !== -1) {
+    queue.splice(qIdx, 1);
+  }
 
-  res.json({ success: true, jobId, job: sanitizeJob(job) });
+  jobs.delete(jobId);
+  broadcast({ type: 'job_removed', jobId, ...getQueueSnapshot() });
+  processQueue();
+  res.json({ success: true });
 });
 
 // Cancel a download job
@@ -342,16 +612,23 @@ app.post('/api/cancel/:jobId', (req, res) => {
     return res.status(404).json({ error: 'Job not found' });
   }
 
+  // If in queue, remove
+  const qIdx = queue.indexOf(jobId);
+  if (qIdx !== -1) {
+    queue.splice(qIdx, 1);
+  }
+
+  job.status = 'cancelled';
   if (job.process) {
-    job.status = 'cancelled';
     if (process.platform === 'win32') {
       exec(`taskkill /pid ${job.process.pid} /T /F`);
     } else {
       job.process.kill('SIGKILL');
     }
-    broadcast({ type: 'job_updated', job: sanitizeJob(job) });
   }
 
+  broadcast({ type: 'job_updated', job: sanitizeJob(job), queueOrder: [...queue] });
+  processQueue();
   res.json({ success: true });
 });
 

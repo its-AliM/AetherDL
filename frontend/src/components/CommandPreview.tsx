@@ -77,10 +77,10 @@ export const CommandPreview: React.FC<CommandPreviewProps> = ({
           type="button"
           onClick={onRun}
           disabled={loading}
-          className="px-5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-xs font-bold text-white flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition-all cursor-pointer"
+          className="px-5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-xs font-bold text-white flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition-all cursor-pointer whitespace-nowrap"
         >
           <Sparkles className="w-3.5 h-3.5" />
-          Start Download
+          {loading ? 'Adding...' : 'Add to Queue'}
         </button>
       </div>
     </div>

@@ -75,14 +75,16 @@ export interface DownloadJob {
   id: string;
   url: string;
   title: string;
-  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'cancelled' | 'paused';
   progress: number;
   eta: string;
   speed: string;
   size: string;
   filename: string;
   downloadPath: string;
-  startTime: number;
+  options?: Record<string, string | number | boolean | string[]>;
+  customArgs?: string;
+  startTime: number | null;
   endTime: number | null;
   error: string | null;
   command: string;
@@ -94,6 +96,16 @@ export interface SystemStatus {
   ffmpeg: { installed: boolean; version: string };
   downloadsDir: string;
   activeJobsCount: number;
+  queuedCount?: number;
+  isQueuePaused?: boolean;
+  maxConcurrent?: number;
+}
+
+export interface QueueState {
+  isPaused: boolean;
+  maxConcurrent: number;
+  activeCount: number;
+  queuedCount: number;
 }
 
 export interface DownloadedFile {
