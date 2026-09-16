@@ -1,4 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { 
+  Search, 
+  Zap, 
+  SlidersHorizontal, 
+  Layers, 
+  FolderOpen 
+} from 'lucide-react';
 import { Header } from './components/Header';
 import { MediaInspector } from './components/MediaInspector';
 import { QuickPresets } from './components/QuickPresets';
@@ -476,31 +483,75 @@ export function App() {
       {/* Main Content Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-3 overflow-x-auto">
+        <div className="flex items-center gap-2 border-b border-slate-800 pb-3 overflow-x-auto scrollbar-none">
           {[
-            { id: 'inspector', label: 'Media Inspector & Formats' },
-            { id: 'presets', label: 'Quick 1-Click Presets' },
-            { id: 'options', label: `Complete Feature Matrix (${schemaData.totalOptions} flags)` },
+            { 
+              id: 'inspector', 
+              label: 'Media Inspector', 
+              icon: Search,
+              badge: metadata ? '1 loaded' : undefined,
+              badgeColor: 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+            },
+            { 
+              id: 'presets', 
+              label: 'Quick Presets', 
+              icon: Zap 
+            },
+            { 
+              id: 'options', 
+              label: 'Advanced Matrix', 
+              icon: SlidersHorizontal,
+              badge: Object.keys(options).length > 0 ? `${Object.keys(options).length} set` : `${schemaData.totalOptions} flags`,
+              badgeColor: Object.keys(options).length > 0 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-slate-800 text-slate-400'
+            },
             {
               id: 'downloads',
-              label: `Download Queue (${downloadingCount > 0 ? `${downloadingCount} active` : `${queuedCount} queued`})`,
-              badge: downloadingCount > 0 ? 'bg-indigo-500 text-white' : queuedCount > 0 ? 'bg-slate-700 text-slate-300' : undefined
+              label: 'Download Queue',
+              icon: Layers,
+              badge: downloadingCount > 0 
+                ? `${downloadingCount} active` 
+                : queuedCount > 0 
+                  ? `${queuedCount} queued` 
+                  : jobs.length > 0 
+                    ? `${jobs.length}` 
+                    : undefined,
+              badgeColor: downloadingCount > 0 
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse' 
+                : queuedCount > 0 
+                  ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' 
+                  : 'bg-slate-800 text-slate-400'
             },
-            { id: 'files', label: `Media Library (${files.length})` }
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id as typeof activeTab)}
-              className={`px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer flex items-center gap-2 ${
-                activeTab === tab.id
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
-                  : 'bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800'
-              }`}
-            >
-              <span>{tab.label}</span>
-            </button>
-          ))}
+            { 
+              id: 'files', 
+              label: 'Downloads Library', 
+              icon: FolderOpen,
+              badge: files.length > 0 ? `${files.length}` : undefined,
+              badgeColor: 'bg-slate-800 text-slate-400'
+            }
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                className={`px-3.5 py-2.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer flex items-center gap-2 border ${
+                  isActive
+                    ? 'bg-indigo-600 text-white border-indigo-500/50 shadow-lg shadow-indigo-600/25'
+                    : 'bg-slate-900/60 hover:bg-slate-800/80 text-slate-400 hover:text-slate-200 border-slate-800/80'
+                }`}
+              >
+                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                <span>{tab.label}</span>
+                {tab.badge && (
+                  <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium leading-none ${tab.badgeColor || 'bg-slate-800 text-slate-300'}`}>
+                    {tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* Dynamic Tab Views */}
@@ -563,14 +614,16 @@ export function App() {
           )}
         </div>
 
-        {/* Live Command Preview Box always anchored at bottom */}
-        <CommandPreview
-          command={generatedCommand}
-          onRun={() => handleAddToQueue()}
-          loading={isStartingDownload}
-          rawArgs={rawArgs}
-          onRawArgsChange={setRawArgs}
-        />
+        {/* Live Command Preview Box - shown on configuration & preview tabs, hidden on Queue and Library */}
+        {activeTab !== 'downloads' && activeTab !== 'files' && (
+          <CommandPreview
+            command={generatedCommand}
+            onRun={() => handleAddToQueue()}
+            loading={isStartingDownload}
+            rawArgs={rawArgs}
+            onRawArgsChange={setRawArgs}
+          />
+        )}
       </main>
     </div>
   );

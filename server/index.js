@@ -105,37 +105,50 @@ function startJobProcess(job) {
       const cleanLine = line.trim();
       if (!cleanLine) return;
 
-      job.logs.push({ time: new Date().toLocaleTimeString(), text: cleanLine, type: 'stdout' });
-      if (job.logs.length > 500) job.logs.shift(); // bound log size
+      // Check if line is a progress update from custom progress-template or default yt-dlp format
+      // Examples:
+      // download:[  7.1%]|13:47| 538.91KiB/s| 468.75MiB|D:\...\file.mp4
+      // [  7.1%]|13:47| 538.91KiB/s| 468.75MiB|D:\...\file.mp4
+      // [download]   7.1% of  468.75MiB at  538.91KiB/s ETA 13:47
+      const isProgressTemplate = /^(?:download:)?\[\s*(\d+\.?\d*)%\]\s*\|([^|]*)\|([^|]*)\|([^|]*)(?:\|(.*))?$/.test(cleanLine);
+      const isStandardDlProgress = /\[download\]\s+(\d+\.?\d*)%/.test(cleanLine);
 
-      // Parse custom progress template: download:[10.5%]|00:30|5.2MiB/s|45.0MiB|path/to/file.mp4
-      if (cleanLine.startsWith('download:[')) {
-        const parts = cleanLine.substring(9).split('|');
-        if (parts.length >= 4) {
-          const percentStr = parts[0].replace('%]', '').trim();
-          const percent = parseFloat(percentStr) || 0;
+      if (isProgressTemplate) {
+        const m = cleanLine.match(/^(?:download:)?\[\s*(\d+\.?\d*)%\]\s*\|([^|]*)\|([^|]*)\|([^|]*)(?:\|(.*))?$/);
+        if (m) {
+          const percent = parseFloat(m[1]) || 0;
           job.progress = Math.min(100, Math.max(0, percent));
-          job.eta = parts[1] || '--:--';
-          job.speed = parts[2] || '--/s';
-          job.size = parts[3] || '--';
-          if (parts[4]) {
-            job.filename = path.basename(parts[4]);
+          job.eta = (m[2] || '').trim() || '--:--';
+          job.speed = (m[3] || '').trim() || '--/s';
+          job.size = (m[4] || '').trim() || '--';
+          if (m[5] && m[5].trim()) {
+            job.filename = path.basename(m[5].trim());
           }
+          broadcast({ type: 'job_progress', jobId: job.id, job: sanitizeJob(job) });
+          // Progress lines are not added to logs to keep log console clean and legible
+          return;
         }
-      } else if (cleanLine.includes('[download]') && cleanLine.includes('%')) {
-        // Standard yt-dlp fallback parse
-        const m = cleanLine.match(/(\d+\.?\d*)%\s+of\s+(?:~\s*)?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/);
+      } else if (isStandardDlProgress) {
+        const m = cleanLine.match(/\[download\]\s+(\d+\.?\d*)%\s+of\s+(?:~\s*)?([^\s]+)(?:\s+at\s+([^\s]+))?(?:\s+ETA\s+([^\s]+))?/);
         if (m) {
           job.progress = parseFloat(m[1]) || job.progress;
-          job.size = m[2];
-          job.speed = m[3];
-          job.eta = m[4];
+          if (m[2]) job.size = m[2].trim();
+          if (m[3]) job.speed = m[3].trim();
+          if (m[4]) job.eta = m[4].trim();
+          broadcast({ type: 'job_progress', jobId: job.id, job: sanitizeJob(job) });
+          // Progress lines are not added to logs to keep log console clean
+          return;
         }
       } else if (cleanLine.includes('[Merger]') || cleanLine.includes('[ExtractAudio]') || cleanLine.includes('[Fixup')) {
         job.speed = 'Processing...';
       } else if (cleanLine.startsWith('[download] Destination:')) {
         job.filename = path.basename(cleanLine.replace('[download] Destination:', '').trim());
       }
+
+      // Record informative and non-progress stdout logs
+      const logEntry = { time: new Date().toLocaleTimeString(), text: cleanLine, type: 'stdout' };
+      job.logs.push(logEntry);
+      if (job.logs.length > 500) job.logs.shift(); // bound log size
 
       broadcast({ type: 'job_progress', jobId: job.id, job: sanitizeJob(job) });
     });
@@ -352,14 +365,17 @@ function buildYtdlpArgs(url, options = {}, customArgs = '') {
   return args;
 }
 
-// Generate command preview endpoint
-app.post('/api/build-command', (req, res) => {
-  const { url, options = {}, customArgs = '' } = req.body;
+// Generate command preview endpoint (support both /api/build-command and /api/preview-command)
+function handleBuildCommand(req, res) {
+  const { url, options = {}, customArgs = '' } = req.body || {};
   const args = buildYtdlpArgs(url || 'https://...', options, customArgs);
   // Format for command line display
   const cmd = `yt-dlp ${args.slice(2).map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}`;
   res.json({ command: cmd, args: args.slice(2) });
-});
+}
+
+app.post('/api/build-command', handleBuildCommand);
+app.post('/api/preview-command', handleBuildCommand);
 
 // Get current jobs and queue state
 app.get('/api/jobs', (req, res) => {
